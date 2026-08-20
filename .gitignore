@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment / secrets
+.env
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Downloads / runtime data
+data/
+music/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
