@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -36,10 +36,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 
-def get_download_manager():
-    from .main import app_state
-
-    return app_state.download_manager
+def get_download_manager(request: Request) -> DownloadManager:
+    state = getattr(request.app.state, "fm4_state", None)
+    if state is None:
+        raise HTTPException(status_code=503, detail="Download manager not initialized")
+    return state.download_manager
 
 
 def get_youtube_service():

@@ -85,7 +85,7 @@ class YouTubeSearchService:
 
         # Fresh search required.
         if not self.client.configured:
-            raise YouTubeNotConfigured()
+            raise YouTubeNotConfigured("YOUTUBE_API_KEY is not configured")
         query = build_search_query(entry.artist, entry.title)
         logger.info("Searching YouTube for '%s' (entry %d)", query, entry.id)
         try:

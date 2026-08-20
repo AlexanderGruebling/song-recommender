@@ -25,7 +25,7 @@ from .tasks import Scheduler
 
 logger = logging.getLogger(__name__)
 
-STATIC_DIR = Path(__file__).resolve().parent / "static"
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
 @dataclass
