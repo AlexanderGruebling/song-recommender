@@ -1,0 +1,24 @@
+[Unit]
+Description=FM4 Top 40 Downloader
+Documentation=https://github.com/AlexanderGruebling/song-recommender
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fm4top40
+Group=fm4top40
+WorkingDirectory=/opt/fm4-top40
+EnvironmentFile=/etc/fm4-top40.env
+ExecStart=/opt/fm4-top40/.venv/bin/python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/fm4-top40/data /opt/fm4-top40/music
+
+[Install]
+WantedBy=multi-user.target
