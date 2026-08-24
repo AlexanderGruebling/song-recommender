@@ -14,6 +14,7 @@ from .services.importer import import_chart
 logger = logging.getLogger(__name__)
 
 REFRESH_LOCK_KEY = "chart_refresh_in_progress"
+FETCH_CONCURRENCY = 4
 
 
 def reset_refresh_lock() -> None:
@@ -43,25 +44,34 @@ def _get_state(key: str) -> str | None:
 async def refresh_charts(source: FM4Source) -> dict:
     """Discover and import charts not yet in the database.
 
-    A database-backed lock prevents duplicate concurrent runs. Individual
-    failures are logged and do not abort the whole run.
+    A database-backed lock prevents duplicate concurrent runs. Chart pages
+    are fetched (and parsed) concurrently; imports are written sequentially
+    to keep SQLite write contention low. Individual failures are logged and
+    do not abort the whole run.
     """
     if _get_state(REFRESH_LOCK_KEY) == "running":
         logger.warning("Chart refresh already in progress; skipping")
         return {"discovered": 0, "imported": 0, "skipped": 0, "errors": 0}
 
     _set_state(REFRESH_LOCK_KEY, "running")
-    discovered = imported = skipped = errors = 0
+    imported = skipped = errors = 0
     try:
         links = await source.discover()
         discovered = len(links)
-        for link in links:
-            try:
-                chart = await source.fetch_chart(link.url)
-            except Exception:
-                logger.exception("Failed to fetch chart %s", link.url)
-                errors += 1
-                continue
+
+        semaphore = asyncio.Semaphore(FETCH_CONCURRENCY)
+
+        async def fetch_one(url: str):
+            async with semaphore:
+                try:
+                    return await source.fetch_chart(url)
+                except Exception:
+                    logger.exception("Failed to fetch chart %s", url)
+                    return None
+
+        charts = await asyncio.gather(*(fetch_one(link.url) for link in links))
+
+        for chart in charts:
             if chart is None:
                 errors += 1
                 continue

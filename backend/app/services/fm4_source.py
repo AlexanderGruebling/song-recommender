@@ -5,10 +5,14 @@ articles. Each article (e.g. ``/story/fm4charts-8-8-2026-100``) contains a
 ``table.charts`` with the complete Top 40: rank, movement, artist, title,
 previous-week position and weeks in chart. The chart date is shown in a
 ``div.date`` element using German/Austrian month names.
+
+HTML parsing is CPU-bound (BeautifulSoup over full article pages) and runs
+in a worker thread so it never blocks the event loop.
 """
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import re
@@ -71,7 +75,7 @@ class FM4Source(ChartSource):
             logger.error("FM4 tag page request failed: %s", exc)
             return []
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = await asyncio.to_thread(BeautifulSoup, response.text, "html.parser")
         results: list[DiscoveredChart] = []
         for anchor in soup.find_all("a", href=True):
             href = anchor["href"]
@@ -99,7 +103,7 @@ class FM4Source(ChartSource):
             return None
 
         try:
-            return parse_chart_page(response.text, url)
+            return await asyncio.to_thread(parse_chart_page, response.text, url)
         except ChartParseError as exc:
             logger.warning("FM4 chart parse failed for %s: %s", url, exc)
             return None

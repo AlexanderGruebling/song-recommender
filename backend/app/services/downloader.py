@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from ..config import Settings
 from ..db import session_scope
@@ -96,6 +96,15 @@ class DownloadManager:
 
     async def enqueue(self, request: DownloadRequest) -> Download:
         """Create a queued download row and schedule it. Returns the row."""
+        download_id = await asyncio.to_thread(self._insert_row, request)
+        await self.queue.put(request)
+        logger.info(
+            "Queued download %d for entry %d (%s)",
+            download_id, request.entry_id, request.video_title,
+        )
+        return await asyncio.to_thread(self.get_download, download_id)
+
+    def _insert_row(self, request: DownloadRequest) -> int:
         with session_scope() as session:
             download = Download(
                 entry_id=request.entry_id,
@@ -106,13 +115,7 @@ class DownloadManager:
             )
             session.add(download)
             session.flush()
-            download_id = download.id
-        await self.queue.put(request)
-        logger.info(
-            "Queued download %d for entry %d (%s)",
-            download_id, request.entry_id, request.video_title,
-        )
-        return self.get_download(download_id)
+            return download.id
 
     async def _worker(self) -> None:
         while True:
@@ -143,7 +146,7 @@ class DownloadManager:
             stderr=asyncio.subprocess.STDOUT,
         )
         assert process.stdout is not None
-        progress = 0
+        last_written_percent = -1
         recent_lines: deque[str] = deque(maxlen=5)
         try:
             async for line in process.stdout:
@@ -153,7 +156,13 @@ class DownloadManager:
                 match = PROGRESS_RE.search(text)
                 if match:
                     percent = float(match.group(1))
-                    self._update_progress(download_id, percent)
+                    # yt-dlp emits a progress line roughly every second;
+                    # only persist when the whole percent actually changed
+                    # to avoid a DB transaction per output line.
+                    whole = int(percent)
+                    if whole != last_written_percent:
+                        last_written_percent = whole
+                        self._update_progress(download_id, percent)
                 elif "destination:" not in text:
                     recent_lines.append(text[:300])
                 if "destination:" in text or text.startswith("[download]"):
@@ -273,15 +282,15 @@ class DownloadManager:
 
     def stats(self) -> DownloadStats:
         with session_scope() as session:
-            rows = session.scalars(select(Download)).all()
-        stats = DownloadStats(total=len(rows))
-        for row in rows:
-            if row.status == Download.STATUS_QUEUED:
-                stats.queued += 1
-            elif row.status == Download.STATUS_DOWNLOADING:
-                stats.downloading += 1
-            elif row.status == Download.STATUS_COMPLETED:
-                stats.completed += 1
-            elif row.status == Download.STATUS_FAILED:
-                stats.failed += 1
-        return stats
+            counts = dict(
+                session.execute(
+                    select(Download.status, func.count()).group_by(Download.status)
+                ).all()
+            )
+        return DownloadStats(
+            total=sum(counts.values()),
+            queued=counts.get(Download.STATUS_QUEUED, 0),
+            downloading=counts.get(Download.STATUS_DOWNLOADING, 0),
+            completed=counts.get(Download.STATUS_COMPLETED, 0),
+            failed=counts.get(Download.STATUS_FAILED, 0),
+        )

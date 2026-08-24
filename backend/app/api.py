@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings
@@ -237,7 +238,7 @@ async def search_song_youtube(
     session: Session = Depends(request_session),
     service: YouTubeSearchService = Depends(get_youtube_service),
 ):
-    entry = _load_entry(session, entry_id)
+    entry = await asyncio.to_thread(_load_entry, session, entry_id)
     try:
         results = await service.get_or_search(session, entry, refresh=refresh)
     except (YouTubeNotConfigured, YouTubeQuotaExceeded, YouTubeError) as exc:
@@ -254,16 +255,15 @@ async def download_song(
     session: Session = Depends(request_session),
     manager: DownloadManager = Depends(get_download_manager),
 ):
-    entry = _load_entry(session, entry_id)
+    entry = await asyncio.to_thread(_load_entry, session, entry_id)
     result = session.get(YouTubeResult, payload.youtube_result_id)
     if result is None or result.entry_id != entry_id:
         raise HTTPException(status_code=404, detail="YouTube result not found")
 
     manager_settings = get_settings()
-    async with manager.enqueue_lock:
-        # Reject duplicate concurrent or completed downloads of the same song.
-        # Runs under the manager's enqueue lock so a parallel request cannot
-        # slip a duplicate in between check and queue.
+
+    def _find_existing() -> tuple[str, Download | None]:
+        """Find an active or completed-with-file download for this entry."""
         active = session.scalars(
             select(Download).where(
                 Download.entry_id == entry_id,
@@ -273,10 +273,7 @@ async def download_song(
             )
         ).first()
         if active is not None:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Download already in progress (id={active.id})",
-            )
+            return "active", active
         completed = session.scalars(
             select(Download).where(
                 Download.entry_id == entry_id,
@@ -284,7 +281,22 @@ async def download_song(
             )
         ).first()
         if completed is not None and completed.output_path and Path(completed.output_path).is_file():
-            return DownloadOut.model_validate(completed)
+            return "completed", completed
+        return "none", None
+
+    async with manager.enqueue_lock:
+        # Reject duplicate concurrent or completed downloads of the same song.
+        # Runs under the manager's enqueue lock so a parallel request cannot
+        # slip a duplicate in between check and queue. The blocking queries
+        # run in a thread so lock contention cannot stall the event loop.
+        kind, existing = await asyncio.to_thread(_find_existing)
+        if kind == "active":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Download already in progress (id={existing.id})",
+            )
+        if kind == "completed":
+            return DownloadOut.model_validate(existing)
 
         request = DownloadRequest(
             entry_id=entry_id,
@@ -327,17 +339,15 @@ def get_download(
 
 @router.get("/downloads-summary", response_model=DownloadsSummary)
 def downloads_summary(session: Session = Depends(request_session)):
-    rows = session.scalars(select(Download)).all()
-    summary = DownloadsSummary(
-        total=len(rows), queued=0, downloading=0, completed=0, failed=0
+    counts = dict(
+        session.execute(
+            select(Download.status, func.count()).group_by(Download.status)
+        ).all()
     )
-    for row in rows:
-        if row.status == Download.STATUS_QUEUED:
-            summary.queued += 1
-        elif row.status == Download.STATUS_DOWNLOADING:
-            summary.downloading += 1
-        elif row.status == Download.STATUS_COMPLETED:
-            summary.completed += 1
-        elif row.status == Download.STATUS_FAILED:
-            summary.failed += 1
-    return summary
+    return DownloadsSummary(
+        total=sum(counts.values()),
+        queued=counts.get(Download.STATUS_QUEUED, 0),
+        downloading=counts.get(Download.STATUS_DOWNLOADING, 0),
+        completed=counts.get(Download.STATUS_COMPLETED, 0),
+        failed=counts.get(Download.STATUS_FAILED, 0),
+    )
