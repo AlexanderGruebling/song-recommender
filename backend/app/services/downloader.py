@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,7 +54,9 @@ class DownloadManager:
         self.settings = settings
         self.queue: asyncio.Queue[DownloadRequest] = asyncio.Queue()
         self._workers: list[asyncio.Task] = []
-        self._lock = asyncio.Lock()
+        # Serializes duplicate-check + enqueue so concurrent requests cannot
+        # both queue a download for the same entry.
+        self.enqueue_lock = asyncio.Lock()
         self._active: dict[int, asyncio.Task] = {}  # entry_id -> task
 
     # -- lifecycle -------------------------------------------------
@@ -141,6 +144,7 @@ class DownloadManager:
         )
         assert process.stdout is not None
         progress = 0
+        recent_lines: deque[str] = deque(maxlen=5)
         try:
             async for line in process.stdout:
                 text = line.decode("utf-8", errors="replace").strip()
@@ -150,6 +154,8 @@ class DownloadManager:
                 if match:
                     percent = float(match.group(1))
                     self._update_progress(download_id, percent)
+                elif "destination:" not in text:
+                    recent_lines.append(text[:300])
                 if "destination:" in text or text.startswith("[download]"):
                     logger.debug("yt-dlp: %s", text[:200])
             returncode = await process.wait()
@@ -163,8 +169,9 @@ class DownloadManager:
             output = self._locate_output(request)
             self._complete(download_id, output)
         else:
-            # Read any trailing output for a useful error message.
             error = f"yt-dlp exited with code {returncode}"
+            if recent_lines:
+                error += ": " + " | ".join(recent_lines)
             self._fail(download_id, error)
 
     # -- status updates ---------------------------------------------

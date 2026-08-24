@@ -16,6 +16,15 @@ logger = logging.getLogger(__name__)
 REFRESH_LOCK_KEY = "chart_refresh_in_progress"
 
 
+def reset_refresh_lock() -> None:
+    """Clear a stale in-progress marker left behind by an unclean shutdown."""
+    with session_scope() as session:
+        row = session.get(AppState, REFRESH_LOCK_KEY)
+        if row is not None and row.value == "running":
+            row.value = "done"
+            logger.warning("Cleared stale chart-refresh lock from previous run")
+
+
 def _set_state(key: str, value: str) -> None:
     with session_scope() as session:
         row = session.get(AppState, key)
@@ -111,6 +120,9 @@ class Scheduler:
             self._task = None
 
     async def _run(self) -> None:
+        if self.interval <= 0:
+            logger.info("Chart scheduler disabled (FM4_POLL_INTERVAL=0)")
+            await asyncio.Event().wait()  # park forever
         logger.info(
             "Chart scheduler started (interval %ss)",
             self.interval,
@@ -123,7 +135,4 @@ class Scheduler:
                 raise
             except Exception:
                 logger.exception("Chart refresh run failed")
-            if self.interval <= 0:
-                await asyncio.sleep(3600)
-            else:
-                await asyncio.sleep(self.interval)
+            await asyncio.sleep(self.interval)

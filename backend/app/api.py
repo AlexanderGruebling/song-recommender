@@ -246,40 +246,44 @@ async def download_song(
     if result is None or result.entry_id != entry_id:
         raise HTTPException(status_code=404, detail="YouTube result not found")
 
-    # Reject duplicate concurrent or completed downloads of the same song.
-    active = session.scalars(
-        select(Download).where(
-            Download.entry_id == entry_id,
-            Download.status.in_(
-                [Download.STATUS_QUEUED, Download.STATUS_DOWNLOADING]
-            ),
-        )
-    ).first()
-    if active is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Download already in progress (id={active.id})",
-        )
-    completed = session.scalars(
-        select(Download).where(
-            Download.entry_id == entry_id,
-            Download.status == Download.STATUS_COMPLETED,
-        )
-    ).first()
-    if completed is not None and completed.output_path and Path(completed.output_path).is_file():
-        return DownloadOut.model_validate(completed)
+    manager_settings = get_settings()
+    async with manager.enqueue_lock:
+        # Reject duplicate concurrent or completed downloads of the same song.
+        # Runs under the manager's enqueue lock so a parallel request cannot
+        # slip a duplicate in between check and queue.
+        active = session.scalars(
+            select(Download).where(
+                Download.entry_id == entry_id,
+                Download.status.in_(
+                    [Download.STATUS_QUEUED, Download.STATUS_DOWNLOADING]
+                ),
+            )
+        ).first()
+        if active is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Download already in progress (id={active.id})",
+            )
+        completed = session.scalars(
+            select(Download).where(
+                Download.entry_id == entry_id,
+                Download.status == Download.STATUS_COMPLETED,
+            )
+        ).first()
+        if completed is not None and completed.output_path and Path(completed.output_path).is_file():
+            return DownloadOut.model_validate(completed)
 
-    request = DownloadRequest(
-        entry_id=entry_id,
-        video_id=result.video_id,
-        video_url=result.video_url,
-        video_title=result.video_title,
-        result_id=result.id,
-        output_dir=Path(get_settings().resolved_download_dir),
-        artist=entry.artist,
-        title=entry.title,
-    )
-    download = await manager.enqueue(request)
+        request = DownloadRequest(
+            entry_id=entry_id,
+            video_id=result.video_id,
+            video_url=result.video_url,
+            video_title=result.video_title,
+            result_id=result.id,
+            output_dir=Path(manager_settings.resolved_download_dir),
+            artist=entry.artist,
+            title=entry.title,
+        )
+        download = await manager.enqueue(request)
     return DownloadOut.model_validate(download)
 
 

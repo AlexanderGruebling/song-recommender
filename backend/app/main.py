@@ -21,7 +21,7 @@ from .config import get_settings
 from .db import init_db
 from .logging_conf import configure_logging
 from .services.downloader import DownloadManager
-from .tasks import Scheduler
+from .tasks import reset_refresh_lock, Scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         init_db()
+        reset_refresh_lock()
         manager = DownloadManager(settings)
         scheduler = Scheduler(settings)
         app.state.fm4_state = AppState(download_manager=manager, scheduler=scheduler)
