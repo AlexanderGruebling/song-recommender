@@ -24,6 +24,7 @@ vi.mock("../src/api.js", () => ({
     searchYoutube: vi.fn(),
     download: vi.fn(),
     getDownload: vi.fn(),
+    downloads: vi.fn(),
   },
 }));
 
@@ -42,6 +43,7 @@ function mountView() {
 describe("SongView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    api.downloads.mockResolvedValue([]);
     vi.useFakeTimers();
   });
 
@@ -69,14 +71,13 @@ describe("SongView", () => {
     vi.useRealTimers();
   });
 
-  it("selects a candidate and starts a download", async () => {
+  it("starts a download without selecting a candidate first", async () => {
     api.song.mockResolvedValue(song);
     api.youtube.mockResolvedValue(candidates);
-    api.download.mockResolvedValue({ id: 900, status: "queued", progress: 0 });
+    api.download.mockResolvedValue({ id: 900, status: "queued", progress: 0, video_id: "def" });
     const wrapper = mountView();
     await flushPromises();
 
-    await wrapper.findAll(".candidate")[1].trigger("click");
     const buttons = wrapper.findAll(".c-download button");
     expect(buttons[1].element.disabled).toBe(false);
 
@@ -84,6 +85,23 @@ describe("SongView", () => {
     await flushPromises();
     expect(api.download).toHaveBeenCalledWith("10", 101);
     expect(wrapper.text()).toContain("Queued for download");
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
+
+  it("disables the button for an already downloaded candidate", async () => {
+    api.song.mockResolvedValue(song);
+    api.youtube.mockResolvedValue([
+      { ...candidates[0], download_status: "completed" },
+      candidates[1],
+    ]);
+    const wrapper = mountView();
+    await flushPromises();
+
+    const buttons = wrapper.findAll(".c-download button");
+    expect(buttons[0].element.disabled).toBe(true);
+    expect(buttons[0].text()).toContain("Downloaded");
+    expect(buttons[1].element.disabled).toBe(false);
     wrapper.unmount();
     vi.useRealTimers();
   });
@@ -107,7 +125,6 @@ describe("SongView", () => {
     const wrapper = mountView();
     await flushPromises();
 
-    await wrapper.findAll(".candidate")[0].trigger("click");
     await wrapper.find(".c-download button").trigger("click");
     await flushPromises();
     expect(wrapper.text()).toContain("quota exhausted");

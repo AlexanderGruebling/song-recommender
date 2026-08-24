@@ -8,14 +8,24 @@ const route = useRoute();
 const song = ref(null);
 const candidates = ref([]);
 const loading = ref(true);
+const candidatesLoading = ref(true);
 const searching = ref(false);
 const downloading = ref(false);
 const error = ref(null);
-const selectedId = ref(null);
 const download = ref(null);
 let timer = null;
 
 const hasCandidates = computed(() => candidates.value.length > 0);
+
+function buttonLabel(candidate) {
+  if (downloading.value) return "Starting…";
+  if (candidate.download_status === "completed") return "Downloaded ✓";
+  return "Download";
+}
+
+function buttonDisabled(candidate) {
+  return downloading.value || candidate.download_status === "completed";
+}
 
 async function loadSong() {
   try {
@@ -30,8 +40,11 @@ async function loadSong() {
 async function loadCandidates() {
   try {
     candidates.value = await api.youtube(route.params.id);
+    if (!hasCandidates.value) await runSearch();
   } catch (err) {
     /* non-fatal */
+  } finally {
+    candidatesLoading.value = false;
   }
 }
 
@@ -52,10 +65,32 @@ async function startDownload(resultId) {
   error.value = null;
   try {
     download.value = await api.download(route.params.id, resultId);
+    const candidate = candidates.value.find((c) => c.id === resultId);
+    if (candidate && download.value.status !== "failed") {
+      candidate.download_status = download.value.status;
+    }
   } catch (err) {
     error.value = err.message;
   } finally {
     downloading.value = false;
+  }
+}
+
+// Pick up a download that was started earlier (e.g. before navigating away)
+// so its progress keeps showing on this page.
+async function resumeActiveDownload() {
+  if (download.value && !["queued", "downloading"].includes(download.value.status)) return;
+  try {
+    const all = await api.downloads();
+    const latest = all.find((d) => d.entry_id === Number(route.params.id));
+    if (
+      latest &&
+      (!download.value || ["queued", "downloading"].includes(latest.status))
+    ) {
+      download.value = latest;
+    }
+  } catch {
+    /* non-fatal */
   }
 }
 
@@ -64,6 +99,13 @@ async function pollDownload() {
   if (["queued", "downloading"].includes(download.value.status)) {
     try {
       download.value = await api.getDownload(download.value.id);
+      if (download.value.status === "completed") {
+        for (const candidate of candidates.value) {
+          if (candidate.video_id === download.value.video_id) {
+            candidate.download_status = "completed";
+          }
+        }
+      }
     } catch {
       /* ignore */
     }
@@ -71,10 +113,8 @@ async function pollDownload() {
 }
 
 onMounted(async () => {
-  await loadSong();
-  await loadCandidates();
-  if (!hasCandidates.value) await runSearch();
   timer = setInterval(pollDownload, 2000);
+  await Promise.all([loadSong(), loadCandidates(), resumeActiveDownload()]);
 });
 onBeforeUnmount(() => clearInterval(timer));
 </script>
@@ -116,7 +156,9 @@ onBeforeUnmount(() => clearInterval(timer));
         </button>
       </div>
 
-      <div v-if="searching" class="empty-state"><span class="spinner"></span> Searching YouTube…</div>
+      <div v-if="candidatesLoading || searching" class="empty-state">
+        <span class="spinner"></span> Searching YouTube…
+      </div>
       <div v-else-if="!hasCandidates" class="empty-state">
         No candidates found. Try “Refresh search”.
       </div>
@@ -125,8 +167,7 @@ onBeforeUnmount(() => clearInterval(timer));
           v-for="candidate in candidates"
           :key="candidate.id"
           class="candidate"
-          :class="{ selected: selectedId === candidate.id }"
-          @click="selectedId = candidate.id"
+          :class="{ completed: candidate.download_status === 'completed' }"
         >
           <img
             v-if="candidate.thumbnail_url"
@@ -141,16 +182,23 @@ onBeforeUnmount(() => clearInterval(timer));
             <div class="c-channel">{{ candidate.channel }}</div>
             <div class="c-meta">
               <span v-if="candidate.duration_seconds">{{ formatDuration(candidate.duration_seconds) }}</span>
-              <a :href="candidate.video_url" target="_blank" rel="noopener" @click.stop>Open on YouTube</a>
+              <a :href="candidate.video_url" target="_blank" rel="noopener">Open on YouTube</a>
             </div>
           </div>
           <div class="c-download">
+            <span
+              v-if="candidate.download_status && candidate.download_status !== 'completed'"
+              class="badge small-badge"
+              :class="candidate.download_status"
+            >
+              {{ candidate.download_status }}
+            </span>
             <button
               class="btn primary small"
-              :disabled="selectedId !== candidate.id || downloading"
+              :disabled="buttonDisabled(candidate)"
               @click.stop="startDownload(candidate.id)"
             >
-              {{ downloading ? "Starting…" : "Download" }}
+              {{ buttonLabel(candidate) }}
             </button>
           </div>
         </div>

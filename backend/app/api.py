@@ -95,7 +95,17 @@ def _entry_out(session: Session, entry: ChartEntry) -> ChartEntryOut:
     )
 
 
-def _youtube_out(result: YouTubeResult) -> YouTubeResultOut:
+def _video_status_map(session: Session, entry_id: int) -> dict[str, str]:
+    """Map video_id -> status of the latest download for that video."""
+    rows = session.scalars(
+        select(Download)
+        .where(Download.entry_id == entry_id)
+        .order_by(Download.created_at)
+    ).all()
+    return {row.video_id: row.status for row in rows}
+
+
+def _youtube_out(result: YouTubeResult, download_status: str | None = None) -> YouTubeResultOut:
     return YouTubeResultOut(
         id=result.id,
         rank=result.rank,
@@ -109,7 +119,7 @@ def _youtube_out(result: YouTubeResult) -> YouTubeResultOut:
         published_at=result.published_at,
         query=result.query,
         search_timestamp=result.search_timestamp,
-        download_status=None,
+        download_status=download_status,
     )
 
 
@@ -210,12 +220,13 @@ def get_song_youtube(
     session: Session = Depends(request_session),
 ):
     _load_entry(session, entry_id)
+    statuses = _video_status_map(session, entry_id)
     results = session.scalars(
         select(YouTubeResult)
         .where(YouTubeResult.entry_id == entry_id)
         .order_by(YouTubeResult.rank)
     ).all()
-    return [_youtube_out(r) for r in results]
+    return [_youtube_out(r, statuses.get(r.video_id)) for r in results]
 
 
 @router.post("/songs/{entry_id}/youtube/search", response_model=list[YouTubeResultOut])
@@ -231,7 +242,8 @@ async def search_song_youtube(
     except (YouTubeNotConfigured, YouTubeQuotaExceeded, YouTubeError) as exc:
         logger.error("YouTube search failed for entry %d: %s", entry_id, exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return [_youtube_out(r) for r in results]
+    statuses = _video_status_map(session, entry_id)
+    return [_youtube_out(r, statuses.get(r.video_id)) for r in results]
 
 
 @router.post("/songs/{entry_id}/download", response_model=DownloadOut)

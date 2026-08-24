@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_serializer
 
 
 class ChartEntryOut(BaseModel):
@@ -90,11 +90,16 @@ class DownloadOut(BaseModel):
     video_title: str
     status: str
     output_path: str | None
+    # Stored internally as percent*100; exposed to clients as a plain percent.
     progress: float
     error: str | None
     started_at: datetime | None
     finished_at: datetime | None
     created_at: datetime
+
+    @field_serializer("progress")
+    def _progress_percent(self, value: float) -> float:
+        return round(value / 100.0, 2)
 
 
 class RefreshResult(BaseModel):

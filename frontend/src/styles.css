@@ -291,7 +291,6 @@ a.song-link:hover .song-title {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 12px;
-  cursor: pointer;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
@@ -299,9 +298,8 @@ a.song-link:hover .song-title {
   border-color: var(--accent);
 }
 
-.candidate.selected {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgb(225 29 72 / 0.15);
+.candidate.completed {
+  opacity: 0.75;
 }
 
 .candidate .thumb {
@@ -348,6 +346,14 @@ a.song-link:hover .song-title {
 
 .candidate .c-download {
   align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.small-badge {
+  font-size: 0.72rem;
+  padding: 3px 8px;
 }
 
 /* Messages */
