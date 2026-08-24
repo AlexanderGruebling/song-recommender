@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings
-from .db import get_session
+from .db import request_session
 from .models import Chart, ChartEntry, Download, YouTubeResult
 from .schemas import (
     ChartDetailOut,
@@ -118,7 +118,7 @@ def _youtube_out(result: YouTubeResult) -> YouTubeResultOut:
 
 @router.get("/charts", response_model=list[ChartOut])
 def list_charts(
-    session: Session = Depends(get_session),
+    session: Session = Depends(request_session),
     limit: int = Query(200, ge=1, le=1000),
 ):
     charts = session.scalars(_chart_query().limit(limit)).all()
@@ -148,7 +148,7 @@ def list_charts(
 @router.get("/charts/{chart_id}", response_model=ChartDetailOut)
 def get_chart(
     chart_id: int,
-    session: Session = Depends(get_session),
+    session: Session = Depends(request_session),
 ):
     chart = session.get(Chart, chart_id, options=[selectinload(Chart.entries)])
     if chart is None:
@@ -186,7 +186,7 @@ async def refresh_charts_endpoint():
 @router.get("/songs/{entry_id}", response_model=SongOut)
 def get_song(
     entry_id: int,
-    session: Session = Depends(get_session),
+    session: Session = Depends(request_session),
 ):
     entry = _load_entry(session, entry_id)
     chart = session.get(Chart, entry.chart_id)
@@ -207,7 +207,7 @@ def get_song(
 @router.get("/songs/{entry_id}/youtube", response_model=list[YouTubeResultOut])
 def get_song_youtube(
     entry_id: int,
-    session: Session = Depends(get_session),
+    session: Session = Depends(request_session),
 ):
     _load_entry(session, entry_id)
     results = session.scalars(
@@ -222,7 +222,7 @@ def get_song_youtube(
 async def search_song_youtube(
     entry_id: int,
     refresh: bool = Query(False),
-    session: Session = Depends(get_session),
+    session: Session = Depends(request_session),
     service: YouTubeSearchService = Depends(get_youtube_service),
 ):
     entry = _load_entry(session, entry_id)
@@ -238,7 +238,7 @@ async def search_song_youtube(
 async def download_song(
     entry_id: int,
     payload: DownloadRequestIn,
-    session: Session = Depends(get_session),
+    session: Session = Depends(request_session),
     manager: DownloadManager = Depends(get_download_manager),
 ):
     entry = _load_entry(session, entry_id)
@@ -288,7 +288,7 @@ async def download_song(
 
 @router.get("/downloads", response_model=list[DownloadOut])
 def list_downloads(
-    session: Session = Depends(get_session),
+    session: Session = Depends(request_session),
     limit: int = Query(200, ge=1, le=1000),
 ):
     rows = session.scalars(
@@ -300,7 +300,7 @@ def list_downloads(
 @router.get("/downloads/{download_id}", response_model=DownloadOut)
 def get_download(
     download_id: int,
-    session: Session = Depends(get_session),
+    session: Session = Depends(request_session),
 ):
     row = session.get(Download, download_id)
     if row is None:
@@ -309,7 +309,7 @@ def get_download(
 
 
 @router.get("/downloads-summary", response_model=DownloadsSummary)
-def downloads_summary(session: Session = Depends(get_session)):
+def downloads_summary(session: Session = Depends(request_session)):
     rows = session.scalars(select(Download)).all()
     summary = DownloadsSummary(
         total=len(rows), queued=0, downloading=0, completed=0, failed=0
