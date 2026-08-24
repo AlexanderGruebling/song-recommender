@@ -65,4 +65,40 @@ describe("ChartDetailView", () => {
     wrapper.unmount();
     vi.useRealTimers();
   });
+
+  it("does not poll while no download is active", async () => {
+    api.chart.mockResolvedValue(chart);
+    const wrapper = mountView();
+    await flushPromises();
+    vi.advanceTimersByTime(9000);
+    await flushPromises();
+    expect(api.chart).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
+
+  it("polls while a download is active and stops when settled", async () => {
+    const activeChart = {
+      ...chart,
+      entries: [
+        { id: 10, rank: 1, artist: "A", title: "T", movement: null, download_status: "downloading", download_progress: 40 },
+      ],
+    };
+    api.chart
+      .mockResolvedValueOnce(activeChart)
+      .mockResolvedValue(chart);
+    const wrapper = mountView();
+    await flushPromises();
+
+    vi.advanceTimersByTime(3000);
+    await flushPromises();
+    expect(api.chart).toHaveBeenCalledTimes(2);
+
+    // Settled chart returned on the second poll -> polling stops.
+    vi.advanceTimersByTime(9000);
+    await flushPromises();
+    expect(api.chart).toHaveBeenCalledTimes(2);
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
 });

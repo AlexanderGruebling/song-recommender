@@ -50,7 +50,7 @@ def get_youtube_service():
 def _chart_query():
     return (
         select(Chart)
-        .options(selectinload(Chart.entries))
+        .options(selectinload(Chart.entries).selectinload(ChartEntry.downloads))
         .order_by(Chart.chart_date.desc().nullslast(), Chart.discovered_at.desc())
     )
 
@@ -62,25 +62,22 @@ def _load_entry(session: Session, entry_id: int) -> ChartEntry:
     return entry
 
 
-def _latest_download(session: Session, entry_id: int) -> Download | None:
-    return session.scalars(
-        select(Download)
-        .where(Download.entry_id == entry_id)
-        .order_by(Download.created_at.desc())
-    ).first()
+def _entry_status(entry: ChartEntry) -> tuple[str | None, float, bool]:
+    """Return (download_status, progress, file_exists) for a chart entry.
 
-
-def _entry_status(session: Session, entry: ChartEntry) -> tuple[str | None, float, bool]:
-    """Return (download_status, progress, file_exists) for a chart entry."""
-    download = _latest_download(session, entry.id)
-    if download is None:
+    Reads entry.downloads, which callers must eager-load to avoid N+1
+    queries; falls back to the lazy load otherwise.
+    """
+    downloads = entry.downloads
+    if not downloads:
         return None, 0.0, False
+    download = max(downloads, key=lambda d: d.created_at)
     exists = bool(download.output_path) and Path(download.output_path).is_file()
     return download.status, download.progress / 100.0, exists
 
 
-def _entry_out(session: Session, entry: ChartEntry) -> ChartEntryOut:
-    status, progress, exists = _entry_status(session, entry)
+def _entry_out(entry: ChartEntry) -> ChartEntryOut:
+    status, progress, exists = _entry_status(entry)
     return ChartEntryOut(
         id=entry.id,
         rank=entry.rank,
@@ -138,7 +135,7 @@ def list_charts(
         completed = sum(
             1
             for e in chart.entries
-            if _entry_status(session, e)[0] == Download.STATUS_COMPLETED
+            if _entry_status(e)[0] == Download.STATUS_COMPLETED
         )
         result.append(
             ChartOut(
@@ -160,10 +157,14 @@ def get_chart(
     chart_id: int,
     session: Session = Depends(request_session),
 ):
-    chart = session.get(Chart, chart_id, options=[selectinload(Chart.entries)])
+    chart = session.get(
+        Chart,
+        chart_id,
+        options=[selectinload(Chart.entries).selectinload(ChartEntry.downloads)],
+    )
     if chart is None:
         raise HTTPException(status_code=404, detail="Chart not found")
-    entries = [_entry_out(session, e) for e in sorted(chart.entries, key=lambda e: e.rank)]
+    entries = [_entry_out(e) for e in sorted(chart.entries, key=lambda e: e.rank)]
     completed = sum(1 for e in entries if e.download_status == Download.STATUS_COMPLETED)
     return ChartDetailOut(
         id=chart.id,

@@ -14,6 +14,7 @@ let timer = null;
 async function load() {
   try {
     chart.value = await api.chart(route.params.id);
+    syncPolling();
   } catch (err) {
     error.value = err.message;
   } finally {
@@ -21,11 +22,24 @@ async function load() {
   }
 }
 
-onMounted(() => {
-  load();
-  timer = setInterval(load, 3000);
+// Only poll while something is actually downloading; stop once settled.
+function syncPolling() {
+  const active =
+    chart.value?.entries.some(
+      (e) => e.download_status === "queued" || e.download_status === "downloading",
+    ) ?? false;
+  if (active && timer === null) {
+    timer = setInterval(load, 3000);
+  } else if (!active && timer !== null) {
+    clearInterval(timer);
+    timer = null;
+  }
+}
+
+onMounted(load);
+onBeforeUnmount(() => {
+  if (timer !== null) clearInterval(timer);
 });
-onBeforeUnmount(() => clearInterval(timer));
 </script>
 
 <template>
