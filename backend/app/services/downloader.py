@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -26,6 +27,10 @@ from .filenames import output_template, sanitize_component
 logger = logging.getLogger(__name__)
 
 PROGRESS_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
+
+# Throttle DB writes to reduce SD-card I/O on Raspberry Pi (Issue #7).
+PROGRESS_BATCH_PERCENT = 5
+PROGRESS_BATCH_SECONDS = 5.0
 
 
 @dataclass
@@ -146,7 +151,8 @@ class DownloadManager:
             stderr=asyncio.subprocess.STDOUT,
         )
         assert process.stdout is not None
-        last_written_percent = -1
+        last_persisted_percent = -1
+        last_persisted_time = time.monotonic()
         recent_lines: deque[str] = deque(maxlen=5)
         try:
             async for line in process.stdout:
@@ -156,13 +162,29 @@ class DownloadManager:
                 match = PROGRESS_RE.search(text)
                 if match:
                     percent = float(match.group(1))
-                    # yt-dlp emits a progress line roughly every second;
-                    # only persist when the whole percent actually changed
-                    # to avoid a DB transaction per output line.
                     whole = int(percent)
-                    if whole != last_written_percent:
-                        last_written_percent = whole
-                        self._update_progress(download_id, percent)
+                    now = time.monotonic()
+                    is_final = percent >= 99.9
+                    should_persist = False
+                    if is_final:
+                        should_persist = True
+                    elif last_persisted_percent == -1:
+                        # First progress update always persists.
+                        should_persist = True
+                    elif whole - last_persisted_percent >= PROGRESS_BATCH_PERCENT:
+                        should_persist = True
+                    elif (
+                        now - last_persisted_time >= PROGRESS_BATCH_SECONDS
+                        and whole != last_persisted_percent
+                    ):
+                        should_persist = True
+                    if should_persist:
+                        # Avoid duplicate writes for the same whole percent
+                        # except for the final update.
+                        if whole != last_persisted_percent or is_final:
+                            last_persisted_percent = whole
+                            last_persisted_time = now
+                            self._update_progress(download_id, percent)
                 elif "destination:" not in text:
                     recent_lines.append(text[:300])
                 if "destination:" in text or text.startswith("[download]"):
