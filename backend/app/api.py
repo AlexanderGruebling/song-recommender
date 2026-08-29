@@ -67,7 +67,9 @@ def _entry_status(entry: ChartEntry) -> tuple[str | None, float, bool]:
     """Return (download_status, progress, file_exists) for a chart entry.
 
     Reads entry.downloads, which callers must eager-load to avoid N+1
-    queries; falls back to the lazy load otherwise.
+    queries; falls back to the lazy load otherwise. The ``is_file()``
+    check is intentionally kept here for detail views only — the list
+    endpoint must not call it (see ``list_charts``).
     """
     downloads = entry.downloads
     if not downloads:
@@ -75,6 +77,17 @@ def _entry_status(entry: ChartEntry) -> tuple[str | None, float, bool]:
     download = max(downloads, key=lambda d: d.created_at)
     exists = bool(download.output_path) and Path(download.output_path).is_file()
     return download.status, download.progress / 100.0, exists
+
+
+def _latest_download_status(entry: ChartEntry) -> str | None:
+    """Return the status of the latest download without touching the filesystem.
+
+    Used by the charts list endpoint to avoid thousands of ``is_file()``
+    syscalls on SD-card storage (Issue #8).
+    """
+    if not entry.downloads:
+        return None
+    return max(entry.downloads, key=lambda d: d.created_at).status
 
 
 def _entry_out(entry: ChartEntry) -> ChartEntryOut:
@@ -133,10 +146,11 @@ def list_charts(
     result = []
     for chart in charts:
         total = len(chart.entries)
+        # Do not call _entry_status() here — that would run Path.is_file()
+        # for every download (thousands of SD-card syscalls). The list view
+        # only needs the DB status; file existence is checked in detail views.
         completed = sum(
-            1
-            for e in chart.entries
-            if _entry_status(e)[0] == Download.STATUS_COMPLETED
+            1 for e in chart.entries if _latest_download_status(e) == Download.STATUS_COMPLETED
         )
         result.append(
             ChartOut(
