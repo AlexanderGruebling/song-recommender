@@ -71,6 +71,7 @@ directory (see `.env.example`):
 | `YTDLP_AUDIO_FORMAT` | `mp3` | Target audio format. |
 | `YTDLP_AUDIO_QUALITY` | `0` | Audio quality (`0` = best). |
 | `DOWNLOAD_CONCURRENCY` | `1` | Parallel downloads. |
+| `DOWNLOAD_TIMEOUT` | `30m` | Abort a single yt-dlp run after this long (`0` disables). |
 | `LOG_LEVEL` | `INFO` | Log verbosity. |
 
 ## Deployment (Raspberry Pi / systemd)

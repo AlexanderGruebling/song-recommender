@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -128,3 +129,38 @@ def test_command_uses_no_shell(tmp_path):
     # Every argument is a single list element: no shell involved.
     assert any(a.startswith("-o") for a in command) or "-o" in command
     assert "-f" in command
+
+async def test_hung_download_times_out_and_kills_children(tmp_path, monkeypatch):
+    """A stuck yt-dlp run fails after DOWNLOAD_TIMEOUT and its children die too."""
+    settings = _settings(tmp_path)
+    settings.download_timeout = "1"
+    manager = DownloadManager(settings)
+    pidfile = tmp_path / "child.pid"
+    # Stand-in for yt-dlp spawning ffmpeg: a background child that outlives sh.
+    monkeypatch.setattr(
+        manager, "_build_command",
+        lambda r: ["sh", "-c", f"sleep 60 & echo $! > {pidfile}; wait"],
+    )
+    manager.start()
+    try:
+        download = await manager.enqueue(_request(tmp_path))
+        for _ in range(40):
+            await asyncio.sleep(0.1)
+            row = manager.get_download(download.id)
+            if row.status == Download.STATUS_FAILED:
+                break
+        assert row.status == Download.STATUS_FAILED
+        assert "timed out" in row.error
+        child = int(pidfile.read_text())
+        await asyncio.sleep(0.1)
+        with pytest.raises(ProcessLookupError):
+            os.kill(child, 0)
+    finally:
+        await manager.stop()
+
+
+def test_timeout_setting_parses_and_can_be_disabled(tmp_path):
+    settings = _settings(tmp_path)
+    assert settings.download_timeout_seconds == 30 * 60
+    settings.download_timeout = "0"
+    assert settings.download_timeout_seconds == 0

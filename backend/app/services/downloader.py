@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import signal
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -145,16 +147,20 @@ class DownloadManager:
             request.entry_id, download_id, request.video_url,
         )
 
+        # Own process group, so a kill also reaches ffmpeg spawned by yt-dlp.
         process = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
         )
         assert process.stdout is not None
         last_persisted_percent = -1
         last_persisted_time = time.monotonic()
         recent_lines: deque[str] = deque(maxlen=5)
-        try:
+
+        async def consume() -> int:
+            nonlocal last_persisted_percent, last_persisted_time
             async for line in process.stdout:
                 text = line.decode("utf-8", errors="replace").strip()
                 if not text:
@@ -189,10 +195,17 @@ class DownloadManager:
                     recent_lines.append(text[:300])
                 if "destination:" in text or text.startswith("[download]"):
                     logger.debug("yt-dlp: %s", text[:200])
-            returncode = await process.wait()
+            return await process.wait()
+
+        timeout = self.settings.download_timeout_seconds or None
+        try:
+            returncode = await asyncio.wait_for(consume(), timeout)
+        except asyncio.TimeoutError:
+            await self._kill(process)
+            self._fail(download_id, f"yt-dlp timed out after {timeout}s")
+            return
         except asyncio.CancelledError:
-            process.kill()
-            await process.wait()
+            await self._kill(process)
             self._fail(download_id, "Download cancelled")
             raise
 
@@ -204,6 +217,19 @@ class DownloadManager:
             if recent_lines:
                 error += ": " + " | ".join(recent_lines)
             self._fail(download_id, error)
+
+    @staticmethod
+    async def _kill(process: asyncio.subprocess.Process) -> None:
+        """Kill yt-dlp and its children (ffmpeg), then reap the process."""
+        if process.returncode is None:
+            try:
+                if hasattr(os, "killpg"):
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:  # pragma: no cover - non-POSIX
+                    process.kill()
+            except ProcessLookupError:
+                pass
+        await process.wait()
 
     # -- status updates ---------------------------------------------
 

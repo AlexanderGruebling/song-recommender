@@ -45,4 +45,8 @@ class ChartSource(ABC):
 
     @abstractmethod
     async def fetch_chart(self, url: str) -> ChartData | None:
-        """Fetch and parse a single chart page. Returns None on failure."""
+        """Fetch and parse a single chart page.
+
+        Returns None when the page cannot be fetched; raises ChartParseError
+        when it is not a usable chart.
+        """

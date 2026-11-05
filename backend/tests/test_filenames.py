@@ -37,3 +37,10 @@ def test_output_template_sanitizes():
     basename = template.rsplit("/", 1)[-1]
     assert ":" not in basename
     assert "/" not in basename
+
+def test_output_template_escapes_percent_signs():
+    """yt-dlp reads % as template syntax; literal ones must be doubled."""
+    template = output_template("/music/100%", "Artist", "100% Pure Love")
+    assert template == "/music/100%%/Artist - 100%% Pure Love.%(ext)s"
+    # The only unescaped template field left is the extension.
+    assert template.replace("%%", "").count("%") == 1
