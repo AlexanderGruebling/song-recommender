@@ -28,7 +28,15 @@ def output_template(output_dir: str, artist: str, title: str) -> str:
     ``%(ext)s`` is left for yt-dlp to fill so the actual extension matches the
     downloaded format. yt-dlp itself will not overwrite existing files when
     ``--no-overwrites`` is used.
+
+    yt-dlp treats ``%`` as template syntax, so literal percent signs in the
+    directory, artist or title (e.g. "100%") are escaped as ``%%``.
     """
     artist_part = sanitize_component(artist) or "unknown-artist"
     title_part = sanitize_component(title) or "unknown-title"
-    return f"{output_dir}/{artist_part} - {title_part}.%(ext)s"
+    name = f"{artist_part} - {title_part}"
+    return f"{_escape_template(output_dir)}/{_escape_template(name)}.%(ext)s"
+
+
+def _escape_template(value: str) -> str:
+    return value.replace("%", "%%")

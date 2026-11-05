@@ -30,6 +30,16 @@ GERMAN_MONTHS = {
     "oktober": 10, "november": 11, "dezember": 12,
 }
 
+# Chart articles use slugs like /story/charts-18-7-2026-100,
+# /story/Charts-20260711-100 or /story/fm4charts-8-8-2026-100. Other story
+# links on the tag page (streams, terms, ...) are ignored.
+CHART_STORY_RE = re.compile(r"^/story/(?:fm4)?charts-[^/?#]+", re.I)
+
+
+class FM4DiscoveryError(Exception):
+    """The FM4 tag page could not be fetched."""
+
+
 # Movements are encoded in the CSS class of the second column.
 MOVEMENT_PATTERNS = [
     ("new", re.compile(r"\bnew\b", re.I)),
@@ -68,20 +78,24 @@ class FM4Source(ChartSource):
             self._client = None
 
     async def discover(self) -> list[DiscoveredChart]:
+        """Return chart story links from the tag page, newest first.
+
+        Raises FM4DiscoveryError when the tag page cannot be loaded, so a
+        network failure is not mistaken for "no new charts".
+        """
         try:
             response = await self.client.get(self.tag_url)
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            logger.error("FM4 tag page request failed: %s", exc)
-            return []
+            raise FM4DiscoveryError(f"FM4 tag page request failed: {exc}") from exc
 
         soup = await asyncio.to_thread(BeautifulSoup, response.text, "html.parser")
         results: list[DiscoveredChart] = []
         for anchor in soup.find_all("a", href=True):
-            href = anchor["href"]
-            if not href.startswith("/story/"):
+            path = self._story_path(anchor["href"])
+            if path is None:
                 continue
-            url = self._absolute(href)
+            url = self._absolute(path)
             title = anchor.get_text(" ", strip=True) or None
             results.append(DiscoveredChart(url=url, title=title))
         # Deduplicate while preserving order.
@@ -91,7 +105,7 @@ class FM4Source(ChartSource):
             if item.url not in seen:
                 seen.add(item.url)
                 unique.append(item)
-        logger.info("FM4 tag page yielded %s story links", len(unique))
+        logger.info("FM4 tag page yielded %s chart story links", len(unique))
         return unique[: self.max_charts]
 
     async def fetch_chart(self, url: str) -> ChartData | None:
@@ -102,11 +116,22 @@ class FM4Source(ChartSource):
             logger.error("FM4 chart fetch failed for %s: %s", url, exc)
             return None
 
-        try:
-            return await asyncio.to_thread(parse_chart_page, response.text, url)
-        except ChartParseError as exc:
-            logger.warning("FM4 chart parse failed for %s: %s", url, exc)
-            return None
+        # ChartParseError propagates: the caller treats a story without a
+        # usable Top 40 table (e.g. a "brand new" feature) as skipped.
+        return await asyncio.to_thread(parse_chart_page, response.text, url)
+
+    def _story_path(self, href: str) -> str | None:
+        """Return the canonical ``/story/<slug>`` path of a chart link, or None.
+
+        Absolute links on the same site and links with a trailing SEO slug
+        (``/story/charts-.../some-headline``) map to the same path, so the
+        same chart is never imported twice under different URLs.
+        """
+        base = self.tag_url.split("/tag/")[0]
+        if href.startswith(base):
+            href = href[len(base):]
+        match = CHART_STORY_RE.match(href)
+        return match.group(0) if match else None
 
     def _absolute(self, href: str) -> str:
         if href.startswith("http"):

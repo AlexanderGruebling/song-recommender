@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     ytdlp_audio_format: str = "mp3"
     ytdlp_audio_quality: str = "0"
     download_concurrency: int = 1
+    # Maximum wall-clock time for a single yt-dlp run ("30m", "1h", seconds;
+    # 0 disables). Prevents one hung download from blocking the queue.
+    download_timeout: str = "30m"
 
     # --- Logging ---
     log_level: str = "INFO"
@@ -70,6 +73,10 @@ class Settings(BaseSettings):
     @property
     def poll_interval_seconds(self) -> int:
         return parse_interval(self.fm4_poll_interval)
+
+    @property
+    def download_timeout_seconds(self) -> int:
+        return parse_interval(self.download_timeout)
 
 
 def parse_interval(value: str) -> int:

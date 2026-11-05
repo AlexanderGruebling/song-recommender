@@ -108,3 +108,111 @@ def test_normalize_song_key():
     assert normalize_song_key("KÄSSY", "T-Shirt") == normalize_song_key(
         "kässy", "t-shirt"
     )
+
+# -- discovery and refresh --------------------------------------------
+
+import httpx  # noqa: E402
+
+from backend.app.services.chart_source import ChartSource, DiscoveredChart  # noqa: E402
+from backend.app.services.fm4_source import FM4DiscoveryError, FM4Source  # noqa: E402
+from backend.app.tasks import refresh_charts  # noqa: E402
+
+TAG_URL = "https://fm4.orf.at/tag/Musik/FM4%20Charts"
+
+
+def _source(handler) -> FM4Source:
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return FM4Source(tag_url=TAG_URL, max_charts=50, client=client)
+
+
+async def test_discover_keeps_only_canonical_chart_links():
+    # The real chart page links to other charts, plus non-chart stories.
+    page = load_fixture(REAL_PAGE)
+    source = _source(lambda request: httpx.Response(200, text=page))
+    try:
+        urls = [c.url for c in await source.discover()]
+    finally:
+        await source.aclose()
+
+    assert len(urls) == len(set(urls))
+    assert all(u.startswith("https://fm4.orf.at/story/") for u in urls)
+    # Non-chart stories are dropped.
+    assert not any("frequenzen" in u or "gewinnspiel" in u for u in urls)
+    # Absolute links with a headline slug collapse to the plain story URL.
+    assert "https://fm4.orf.at/story/charts-18-7-2026-100" in urls
+    assert not any(u.count("/") > 4 for u in urls)
+    # Case variants of the slug are accepted.
+    assert "https://fm4.orf.at/story/Charts-20260711-100" in urls
+
+
+async def test_discover_canonicalizes_duplicate_links():
+    page = """
+      <a href="/story/fm4charts-8-8-2026-100">relative</a>
+      <a href="https://fm4.orf.at/story/fm4charts-8-8-2026-100/farce-ist-die-1">absolute</a>
+      <a href="/story/fm4charts-8-8-2026-100?ref=tag">query</a>
+      <a href="/story/frequenzen-streams100">not a chart</a>
+      <a href="https://example.com/story/charts-1-1-2026-100">other site</a>
+    """
+    source = _source(lambda request: httpx.Response(200, text=page))
+    try:
+        urls = [c.url for c in await source.discover()]
+    finally:
+        await source.aclose()
+    assert urls == ["https://fm4.orf.at/story/fm4charts-8-8-2026-100"]
+
+
+async def test_discover_raises_when_tag_page_fails():
+    source = _source(lambda request: httpx.Response(503))
+    try:
+        with pytest.raises(FM4DiscoveryError):
+            await source.discover()
+    finally:
+        await source.aclose()
+
+
+class FakeSource(ChartSource):
+    def __init__(self, links, pages):
+        self.links = links
+        self.pages = pages
+        self.fetched: list[str] = []
+
+    async def discover(self):
+        return [DiscoveredChart(url=u) for u in self.links]
+
+    async def fetch_chart(self, url):
+        self.fetched.append(url)
+        return self.pages[url]()
+
+
+async def test_refresh_skips_known_and_non_chart_stories(session):
+    known_url = "https://fm4.orf.at/story/known"
+    new_url = "https://fm4.orf.at/story/new"
+    feature_url = "https://fm4.orf.at/story/charts-brandnew"
+    broken_url = "https://fm4.orf.at/story/broken"
+    import_chart(session, parse_chart_page(load_fixture(REAL_PAGE), known_url))
+    session.commit()
+
+    def not_a_chart():
+        raise ChartParseError("no table.charts found")
+
+    source = FakeSource(
+        [known_url, new_url, feature_url, broken_url],
+        {
+            new_url: lambda: parse_chart_page(load_fixture(REAL_PAGE), new_url),
+            feature_url: not_a_chart,
+            broken_url: lambda: None,  # fetch failed
+        },
+    )
+    result = await refresh_charts(source)
+
+    assert known_url not in source.fetched
+    assert result == {"discovered": 4, "imported": 1, "skipped": 2, "errors": 1}
+
+
+async def test_refresh_propagates_discovery_failure():
+    class Failing(FakeSource):
+        async def discover(self):
+            raise FM4DiscoveryError("down")
+
+    with pytest.raises(FM4DiscoveryError):
+        await refresh_charts(Failing([], {}))

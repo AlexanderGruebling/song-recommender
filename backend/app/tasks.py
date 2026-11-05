@@ -5,16 +5,19 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from sqlalchemy import select
+
 from .config import Settings
 from .db import session_scope
-from .models import AppState
-from .services.fm4_source import FM4Source
+from .models import AppState, Chart
+from .services.fm4_source import ChartParseError, FM4DiscoveryError, FM4Source
 from .services.importer import import_chart
 
 logger = logging.getLogger(__name__)
 
 REFRESH_LOCK_KEY = "chart_refresh_in_progress"
 FETCH_CONCURRENCY = 4
+SKIPPED = object()  # sentinel: story fetched but is not a usable chart
 
 
 def reset_refresh_lock() -> None:
@@ -35,6 +38,13 @@ def _set_state(key: str, value: str) -> None:
             row.value = value
 
 
+def _known_source_urls(urls: list[str]) -> set[str]:
+    if not urls:
+        return set()
+    with session_scope() as session:
+        return set(session.scalars(select(Chart.source_url).where(Chart.source_url.in_(urls))))
+
+
 def _get_state(key: str) -> str | None:
     with session_scope() as session:
         row = session.get(AppState, key)
@@ -48,6 +58,10 @@ async def refresh_charts(source: FM4Source) -> dict:
     are fetched (and parsed) concurrently; imports are written sequentially
     to keep SQLite write contention low. Individual failures are logged and
     do not abort the whole run.
+
+    Charts already in the database are not fetched again, and stories that
+    turn out not to contain a Top 40 table count as skipped, not errors. A
+    failure to load the tag page itself propagates to the caller.
     """
     if _get_state(REFRESH_LOCK_KEY) == "running":
         logger.warning("Chart refresh already in progress; skipping")
@@ -59,19 +73,29 @@ async def refresh_charts(source: FM4Source) -> dict:
         links = await source.discover()
         discovered = len(links)
 
+        known = _known_source_urls([link.url for link in links])
+        skipped += len(known)
+        new_links = [link for link in links if link.url not in known]
+
         semaphore = asyncio.Semaphore(FETCH_CONCURRENCY)
 
         async def fetch_one(url: str):
             async with semaphore:
                 try:
                     return await source.fetch_chart(url)
+                except ChartParseError as exc:
+                    logger.info("Skipping %s: not a usable chart (%s)", url, exc)
+                    return SKIPPED
                 except Exception:
                     logger.exception("Failed to fetch chart %s", url)
                     return None
 
-        charts = await asyncio.gather(*(fetch_one(link.url) for link in links))
+        charts = await asyncio.gather(*(fetch_one(link.url) for link in new_links))
 
         for chart in charts:
+            if chart is SKIPPED:
+                skipped += 1
+                continue
             if chart is None:
                 errors += 1
                 continue
@@ -143,6 +167,8 @@ class Scheduler:
                 await refresh_once(self.settings)
             except asyncio.CancelledError:
                 raise
+            except FM4DiscoveryError as exc:
+                logger.error("Chart refresh skipped: %s", exc)
             except Exception:
                 logger.exception("Chart refresh run failed")
             await asyncio.sleep(self.interval)
