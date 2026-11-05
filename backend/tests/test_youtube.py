@@ -123,6 +123,23 @@ async def test_cache_reused_across_entries_with_same_song(session):
     assert session.query(YouTubeResult).filter(YouTubeResult.entry_id == second.id).count() == 1
 
 
+async def test_cache_reused_when_song_is_in_many_charts(session):
+    """Regression: copies from several earlier entries must not be merged."""
+    fake = FakeYouTubeClient(
+        [{"video_id": "v1", "title": "A One", "channel": "A",
+          "channel_id": None, "published_at": None, "thumbnail_url": None},
+         {"video_id": "v2", "title": "A One (Official Audio)", "channel": "A - Topic",
+          "channel_id": None, "published_at": None, "thumbnail_url": None}],
+        configured=True,
+    )
+    service = YouTubeSearchService(fake, candidates=3)
+    for week in range(4):
+        entry = _entry(session, artist="A", title="One", url=f"http://example.test/w{week}")
+        results = await service.get_or_search(session, entry)
+        assert sorted(r.video_id for r in results) == ["v1", "v2"]
+    assert fake.search_calls == 1
+
+
 async def test_search_without_key_raises(session):
     fake = FakeYouTubeClient([], configured=False)
     service = YouTubeSearchService(fake, candidates=3)

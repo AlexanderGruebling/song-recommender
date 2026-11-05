@@ -38,19 +38,26 @@ class YouTubeSearchService:
         )
 
     def find_cached_for_song(self, session: Session, entry: ChartEntry) -> list[YouTubeResult]:
-        """Reuse search results cached for another entry of the same song."""
-        return list(
-            session.scalars(
-                select(YouTubeResult)
-                .join(ChartEntry, YouTubeResult.entry_id == ChartEntry.id)
-                .where(
-                    ChartEntry.song_key == entry.song_key,
-                    ChartEntry.id != entry.id,
-                    YouTubeResult.query == build_search_query(entry.artist, entry.title),
-                )
-                .order_by(YouTubeResult.rank)
+        """Reuse search results cached for another entry of the same song.
+
+        Several entries can hold copies of the same results (one per chart
+        the song appeared in), so only the newest source entry is used;
+        otherwise duplicate video ids would violate ``uq_entry_video``.
+        """
+        source_entry_id = session.scalar(
+            select(YouTubeResult.entry_id)
+            .join(ChartEntry, YouTubeResult.entry_id == ChartEntry.id)
+            .where(
+                ChartEntry.song_key == entry.song_key,
+                ChartEntry.id != entry.id,
+                YouTubeResult.query == build_search_query(entry.artist, entry.title),
             )
+            .order_by(YouTubeResult.search_timestamp.desc(), YouTubeResult.entry_id.desc())
+            .limit(1)
         )
+        if source_entry_id is None:
+            return []
+        return self.cached_results(session, source_entry_id)
 
     async def get_or_search(self, session: Session, entry: ChartEntry, refresh: bool = False):
         """Return ranked candidates for an entry, searching only if needed."""
